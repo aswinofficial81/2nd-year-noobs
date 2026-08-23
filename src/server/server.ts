@@ -1059,9 +1059,12 @@ if (fs.existsSync(clientDistPath)) {
 }
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`🚀 Unified Git + CRDT & AI API Server running on http://localhost:${PORT}`);
-  console.log(`📡 WebSocket server running on ws://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  server.listen(PORT, () => {
+    console.log(`🚀 Unified Git + CRDT & AI API Server running on http://localhost:${PORT}`);
+    console.log(`📡 WebSocket server running on ws://localhost:${PORT}`);
+  });
+}
 
+export default app;
 export { app, server };
