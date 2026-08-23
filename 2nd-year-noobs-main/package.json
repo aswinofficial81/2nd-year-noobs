@@ -30,6 +30,7 @@
     "@types/express": "^5.0.6",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.20.1",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/ws": "^8.18.1",
@@ -45,6 +46,7 @@
     "express": "^5.2.1",
     "lucide-react": "^1.33.0",
     "multer": "^2.2.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "ws": "^8.21.3"

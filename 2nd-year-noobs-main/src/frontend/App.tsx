@@ -9,19 +9,52 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Navbar } from './components/Navbar.js';
-import { CollabEditor } from './components/CollabEditor.js';
+import { CollabEditor, type PeerInfo } from './components/CollabEditor.js';
 import { CollabChat } from './components/CollabChat.js';
 import { GitGraphVisualizer } from './components/GitGraphVisualizer.js';
 import { MergeStudio } from './components/MergeStudio.js';
 import { ResearchIngest } from './components/ResearchIngest.js';
 import { RagSearch } from './components/RagSearch.js';
 
-const PEERS_LIST = [
-  { id: 'alice', name: 'Alice (Lead)', color: '#6366f1' },
-  { id: 'bob', name: 'Bob (Researcher)', color: '#06b6d4' },
-  { id: 'carol', name: 'Carol (Architect)', color: '#10b981' },
-  { id: 'dave', name: 'Dave (Reviewer)', color: '#f59e0b' },
+const PEER_COLORS = [
+  '#6366f1',
+  '#06b6d4',
+  '#10b981',
+  '#f59e0b',
+  '#ec4899',
+  '#8b5cf6',
+  '#3b82f6',
 ];
+
+function getOrCreateLocalPeer(): PeerInfo {
+  let id = '';
+  if (typeof window !== 'undefined') {
+    id = localStorage.getItem('git_crdt_peer_id') || '';
+  }
+  if (!id) {
+    id = `peer_${Math.random().toString(36).substring(2, 7)}`;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('git_crdt_peer_id', id);
+    }
+  }
+
+  let name = '';
+  if (typeof window !== 'undefined') {
+    name = localStorage.getItem('git_crdt_peer_name') || '';
+  }
+  if (!name) {
+    name = `Researcher (${id.slice(-4)})`;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('git_crdt_peer_name', name);
+    }
+  }
+
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash << 5) - hash + id.charCodeAt(i);
+  const color = PEER_COLORS[Math.abs(hash) % PEER_COLORS.length];
+
+  return { id, name, color, isOnline: true };
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState<
@@ -48,8 +81,9 @@ export function App() {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
+  const [localPeer, setLocalPeer] = useState<PeerInfo>(getOrCreateLocalPeer);
+  const [connectedPeers, setConnectedPeers] = useState<PeerInfo[]>([getOrCreateLocalPeer()]);
   const [activeBranch, setActiveBranch] = useState('main');
-  const [currentPeer, setCurrentPeer] = useState('alice');
   const [wsConnected, setWsConnected] = useState(false);
 
   const [repoState, setRepoState] = useState<{
@@ -74,13 +108,13 @@ export function App() {
     text: string;
     metadata: Record<string, unknown>;
   }>({
-    title: 'Git + CRDT Whitepaper',
-    text: 'Decentralized Version Control & Real-time Collaboration Engine.',
-    metadata: { version: '1.0.0-rc' },
+    title: 'Untitled Document',
+    text: 'Start collaborating on research notes, code, or ideas here...',
+    metadata: {},
   });
 
   const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [vectorClock, setVectorClock] = useState<Record<string, number>>({ alice: 1 });
+  const [vectorClock, setVectorClock] = useState<Record<string, number>>({});
   const [opLog, setOpLog] = useState<any[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -89,6 +123,30 @@ export function App() {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleUpdatePeerName = (newName: string) => {
+    if (!newName.trim()) return;
+    const updated = { ...localPeer, name: newName.trim() };
+    setLocalPeer(updated);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('git_crdt_peer_name', updated.name);
+    }
+    setConnectedPeers((prev) =>
+      prev.map((p) => (p.id === updated.id ? updated : p))
+    );
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'join',
+          room: activeBranch,
+          peerId: updated.id,
+          peerName: updated.name,
+          color: updated.color,
+        })
+      );
+    }
+    showToast(`Display name updated to '${updated.name}'`);
   };
 
   const fetchRepoState = async () => {
@@ -111,12 +169,21 @@ export function App() {
 
   const fetchSessionState = async () => {
     try {
-      const res = await fetch(`/api/session/state?branch=${activeBranch}&peerId=${currentPeer}`);
+      const res = await fetch(`/api/session/state?branch=${activeBranch}&peerId=${localPeer.id}`);
       const data = await res.json();
       if (data.doc) setDocState(data.doc);
       if (data.chat) setChatMessages(data.chat.messages || []);
       if (data.vectorClock) setVectorClock(data.vectorClock);
       if (data.operationsLog) setOpLog(data.operationsLog);
+      if (data.activePeers && Array.isArray(data.activePeers)) {
+        const list: PeerInfo[] = data.activePeers.map((p: any) =>
+          typeof p === 'string' ? { id: p, name: p, color: '#6366f1' } : p
+        );
+        if (!list.some((p) => p.id === localPeer.id)) {
+          list.unshift(localPeer);
+        }
+        setConnectedPeers(list);
+      }
     } catch (err) {
       console.error('Failed to fetch session state:', err);
     }
@@ -125,7 +192,7 @@ export function App() {
   useEffect(() => {
     fetchRepoState();
     fetchSessionState();
-  }, [activeBranch, currentPeer]);
+  }, [activeBranch, localPeer.id]);
 
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -141,7 +208,9 @@ export function App() {
         JSON.stringify({
           type: 'join',
           room: activeBranch,
-          peerId: currentPeer,
+          peerId: localPeer.id,
+          peerName: localPeer.name,
+          color: localPeer.color,
         })
       );
     };
@@ -154,16 +223,25 @@ export function App() {
           if (msg.doc) setDocState(msg.doc);
           if (msg.chat) setChatMessages(msg.chat.messages || []);
           if (msg.vectorClock) setVectorClock(msg.vectorClock);
+          if (msg.activePeers && Array.isArray(msg.activePeers)) {
+            const list: PeerInfo[] = msg.activePeers.map((p: any) =>
+              typeof p === 'string' ? { id: p, name: p, color: '#6366f1' } : p
+            );
+            if (!list.some((p) => p.id === localPeer.id)) {
+              list.unshift(localPeer);
+            }
+            setConnectedPeers(list);
+          }
         } else if (msg.type === 'crdt-op-applied') {
           if (msg.doc) setDocState(msg.doc);
           if (msg.vectorClock) setVectorClock(msg.vectorClock);
           setOpLog((prev) => [
             ...prev,
             {
-              id: `op-${Date.now()}`,
+              id: `op-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
               peerId: msg.peerId,
               type: msg.opType,
-              clock: (msg.vectorClock?.[msg.peerId] || 0),
+              clock: msg.vectorClock?.[msg.peerId] || 0,
               timestamp: msg.timestamp || Date.now(),
             },
           ]);
@@ -177,7 +255,35 @@ export function App() {
             )
           );
         } else if (msg.type === 'peer-joined') {
-          showToast(`Peer '${msg.peerId}' connected to ${activeBranch}`);
+          if (msg.activePeers && Array.isArray(msg.activePeers)) {
+            const list: PeerInfo[] = msg.activePeers.map((p: any) =>
+              typeof p === 'string' ? { id: p, name: p, color: '#6366f1' } : p
+            );
+            if (!list.some((p) => p.id === localPeer.id)) {
+              list.unshift(localPeer);
+            }
+            setConnectedPeers(list);
+          }
+          if (msg.peerId !== localPeer.id) {
+            showToast(`Peer '${msg.peerName || msg.peerId}' connected`);
+          }
+        } else if (msg.type === 'peer-left') {
+          if (msg.activePeers && Array.isArray(msg.activePeers)) {
+            const list: PeerInfo[] = msg.activePeers.map((p: any) =>
+              typeof p === 'string' ? { id: p, name: p, color: '#6366f1' } : p
+            );
+            if (!list.some((p) => p.id === localPeer.id)) {
+              list.unshift(localPeer);
+            }
+            setConnectedPeers(list);
+          } else {
+            setConnectedPeers((prev) =>
+              prev.filter((p) => p.id !== msg.peerId || p.id === localPeer.id)
+            );
+          }
+          if (msg.peerId !== localPeer.id) {
+            showToast(`Peer '${msg.peerName || msg.peerId}' disconnected`);
+          }
         }
       } catch (err) {
         console.error('WS message error:', err);
@@ -191,15 +297,16 @@ export function App() {
     return () => {
       ws.close();
     };
-  }, [activeBranch, currentPeer]);
+  }, [activeBranch, localPeer.id]);
 
   const handleEditDoc = async (type: 'insert' | 'delete' | 'setTitle' | 'setMetadata', payload: any) => {
+    const editPeerId = payload.peerId || localPeer.id;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
           type: 'crdt-op',
           room: activeBranch,
-          peerId: currentPeer,
+          peerId: editPeerId,
           payload: {
             opType: type,
             ...payload,
@@ -214,7 +321,7 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           branch: activeBranch,
-          peerId: currentPeer,
+          peerId: editPeerId,
           type,
           ...payload,
         }),
@@ -233,8 +340,8 @@ export function App() {
         JSON.stringify({
           type: 'chat-msg',
           room: activeBranch,
-          peerId: author || currentPeer,
-          payload: { text, authorName: author },
+          peerId: localPeer.id,
+          payload: { text, authorName: author || localPeer.name },
         })
       );
     }
@@ -246,7 +353,7 @@ export function App() {
         JSON.stringify({
           type: 'chat-reaction',
           room: activeBranch,
-          peerId: currentPeer,
+          peerId: localPeer.id,
           payload: { messageId, emoji },
         })
       );
@@ -260,9 +367,9 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           branch: activeBranch,
-          peerId: currentPeer,
+          peerId: localPeer.id,
           message,
-          authorName: PEERS_LIST.find((p) => p.id === currentPeer)?.name || currentPeer,
+          authorName: localPeer.name || localPeer.id,
         }),
       });
       const data = await res.json();
@@ -272,23 +379,6 @@ export function App() {
       }
     } catch (err) {
       console.error('Commit failed:', err);
-    }
-  };
-
-  const handleSyncPeers = async (peerA: string, peerB: string) => {
-    try {
-      const res = await fetch('/api/session/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ branch: activeBranch, peerA, peerB }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(data.message);
-        fetchSessionState();
-      }
-    } catch (err) {
-      console.error('Sync failed:', err);
     }
   };
 
@@ -421,23 +511,24 @@ export function App() {
         {activeTab === 'editor' && (
           <CollabEditor
             activeBranch={activeBranch}
-            currentPeer={currentPeer}
-            peersList={PEERS_LIST}
+            currentPeer={localPeer.id}
+            localPeerName={localPeer.name}
+            peersList={connectedPeers}
             docState={docState}
             vectorClock={vectorClock}
             opLog={opLog}
             onEditDoc={handleEditDoc}
             onCommitCheckpoint={handleCommitCheckpoint}
-            onSyncPeers={handleSyncPeers}
-            onSelectPeer={setCurrentPeer}
+            onUpdatePeerName={handleUpdatePeerName}
           />
         )}
 
         {activeTab === 'chat' && (
           <CollabChat
             activeBranch={activeBranch}
-            currentPeer={currentPeer}
-            peersList={PEERS_LIST}
+            currentPeer={localPeer.id}
+            localPeerName={localPeer.name}
+            peersList={connectedPeers}
             messages={chatMessages}
             onSendMessage={handleSendMessage}
             onReactMessage={handleReactMessage}
@@ -479,4 +570,3 @@ export function App() {
 }
 
 export default App;
-

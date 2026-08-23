@@ -6,17 +6,26 @@ import {
   Send,
   GitCommit,
   Sparkles,
-  RefreshCw,
   Zap,
   Tag,
   CheckCircle2,
   Layers,
+  Edit2,
+  Check,
 } from 'lucide-react';
+
+export interface PeerInfo {
+  id: string;
+  name: string;
+  color: string;
+  isOnline?: boolean;
+}
 
 interface CollabEditorProps {
   activeBranch: string;
   currentPeer: string;
-  peersList: Array<{ id: string; name: string; color: string }>;
+  localPeerName: string;
+  peersList: PeerInfo[];
   docState: {
     title: string;
     text: string;
@@ -33,21 +42,20 @@ interface CollabEditorProps {
   }>;
   onEditDoc: (type: 'insert' | 'delete' | 'setTitle' | 'setMetadata', payload: any) => void;
   onCommitCheckpoint: (message: string) => void;
-  onSyncPeers: (peerA: string, peerB: string) => void;
-  onSelectPeer: (peerId: string) => void;
+  onUpdatePeerName: (name: string) => void;
 }
 
 export const CollabEditor: React.FC<CollabEditorProps> = ({
   activeBranch,
   currentPeer,
+  localPeerName,
   peersList,
   docState,
   vectorClock,
   opLog,
   onEditDoc,
   onCommitCheckpoint,
-  onSyncPeers,
-  onSelectPeer,
+  onUpdatePeerName,
 }) => {
   const [localText, setLocalText] = useState(docState.text || '');
   const [localTitle, setLocalTitle] = useState(docState.title || '');
@@ -56,6 +64,8 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
   const [newMetaKey, setNewMetaKey] = useState('');
   const [newMetaVal, setNewMetaVal] = useState('');
   const [isSimulating, setIsSimulating] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState(localPeerName);
 
   useEffect(() => {
     setLocalText(docState.text || '');
@@ -64,6 +74,10 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
   useEffect(() => {
     setLocalTitle(docState.title || '');
   }, [docState.title]);
+
+  useEffect(() => {
+    setNameInput(localPeerName);
+  }, [localPeerName]);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
@@ -93,75 +107,124 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
     setShowCommitBox(false);
   };
 
+  const handleSaveName = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (nameInput.trim()) {
+      onUpdatePeerName(nameInput.trim());
+    }
+    setIsEditingName(false);
+  };
+
+  // Simulate real concurrent edit from a remote peer replica
   const triggerConcurrentEditDemo = async () => {
     setIsSimulating(true);
-    const phrasesAlice = [' [Alice: Real-Time CRDT Stream]', ' [Alice: Zero Conflict Verification]'];
-    const phrasesBob = [' [Bob: Immutable Git DAG]', ' [Bob: Deterministic Vector Ordering]'];
-
-    for (let i = 0; i < phrasesAlice.length; i++) {
-      onEditDoc('insert', { text: localText + phrasesAlice[i], position: localText.length });
-      await new Promise((r) => setTimeout(r, 250));
-      onEditDoc('insert', { text: localText + phrasesAlice[i] + phrasesBob[i], position: localText.length });
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    const remotePeerId = `peer_sim_${Math.random().toString(36).substring(2, 6)}`;
+    const phrase = ` [Concurrent update by ${remotePeerId}]`;
+    const updated = localText + phrase;
+    setLocalText(updated);
+    onEditDoc('insert', { text: updated, position: localText.length, peerId: remotePeerId });
+    await new Promise((r) => setTimeout(r, 300));
     setIsSimulating(false);
   };
 
-  const currentPeerObj = peersList.find((p) => p.id === currentPeer) || peersList[0];
+  // Merge connected peers with any other known peers in the vector clock
+  const allKnownPeerIds = Array.from(
+    new Set([...peersList.map((p) => p.id), ...Object.keys(vectorClock), currentPeer])
+  );
+
+  const allPeers: PeerInfo[] = allKnownPeerIds.map((id) => {
+    const existing = peersList.find((p) => p.id === id);
+    if (existing) return existing;
+    if (id === currentPeer) {
+      return { id, name: localPeerName, color: '#6366f1', isOnline: true };
+    }
+    return { id, name: id, color: '#06b6d4', isOnline: false };
+  });
 
   return (
     <div className="grid-12">
       {/* Main Document Editor (Col 8) */}
       <div className="col-8">
         <div className="glass-card" style={{ height: '100%' }}>
-          {/* Peer Switcher Banner */}
-          <div className="glass-card-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          {/* Active Peers Presence Header */}
+          <div className="glass-card-header" style={{ flexWrap: 'wrap', gap: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
               <Users style={{ width: '15px', height: '15px', color: 'var(--indigo)' }} />
               <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                Active Peer Persona:
+                Active Peers ({allPeers.length}):
               </span>
-              <div className="persona-selector">
-                {peersList.map((peer) => (
-                  <button
-                    key={peer.id}
-                    onClick={() => onSelectPeer(peer.id)}
-                    className={`persona-btn ${currentPeer === peer.id ? 'active' : ''}`}
-                  >
-                    <span
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                {allPeers.map((peer) => {
+                  const isLocal = peer.id === currentPeer;
+                  return (
+                    <div
+                      key={peer.id}
                       style={{
-                        width: '8px',
-                        height: '8px',
-                        borderRadius: '50%',
-                        backgroundColor: peer.color,
-                        display: 'inline-block',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        background: isLocal ? 'rgba(99, 102, 241, 0.15)' : 'var(--bg-surface)',
+                        border: isLocal ? '1px solid var(--indigo)' : '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '0.2rem 0.5rem',
+                        fontSize: '0.75rem',
                       }}
-                    />
-                    {peer.name}
-                  </button>
-                ))}
+                    >
+                      <span
+                        style={{
+                          width: '7px',
+                          height: '7px',
+                          borderRadius: '50%',
+                          backgroundColor: peer.color || '#6366f1',
+                          display: 'inline-block',
+                        }}
+                      />
+                      <span style={{ fontWeight: isLocal ? 700 : 500, color: 'var(--text-primary)' }}>
+                        {peer.name} {isLocal && <span style={{ color: 'var(--indigo-light)', fontWeight: 400 }}>(You)</span>}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Actions */}
+            {/* Local Peer Customization & Concurrency Actions */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {isEditingName ? (
+                <form onSubmit={handleSaveName} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <input
+                    type="text"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    className="input-control"
+                    style={{ padding: '0.2rem 0.4rem', fontSize: '0.75rem', width: '110px' }}
+                    autoFocus
+                  />
+                  <button type="submit" className="btn btn-emerald btn-sm" style={{ padding: '0.2rem 0.4rem' }}>
+                    <Check style={{ width: '12px', height: '12px' }} />
+                  </button>
+                </form>
+              ) : (
+                <button
+                  onClick={() => setIsEditingName(true)}
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: '0.75rem', padding: '0.25rem 0.5rem' }}
+                  title="Edit your display name"
+                >
+                  <Edit2 style={{ width: '11px', height: '11px' }} />
+                  <span>Set Name</span>
+                </button>
+              )}
+
               <button
                 onClick={triggerConcurrentEditDemo}
                 disabled={isSimulating}
                 className="btn btn-secondary btn-sm"
                 style={{ color: 'var(--cyan-light)', borderColor: 'rgba(6, 182, 212, 0.3)' }}
+                title="Simulate an edit from a second concurrent peer"
               >
                 <Zap style={{ width: '13px', height: '13px', color: 'var(--cyan)' }} />
-                <span>{isSimulating ? 'Simulating...' : 'Concurrent Stream'}</span>
-              </button>
-
-              <button
-                onClick={() => onSyncPeers('alice', 'bob')}
-                className="btn btn-secondary btn-sm"
-                style={{ color: 'var(--emerald-light)', borderColor: 'rgba(16, 185, 129, 0.3)' }}
-              >
-                <RefreshCw style={{ width: '13px', height: '13px', color: 'var(--emerald)' }} />
-                <span>Sync Replicas</span>
+                <span>{isSimulating ? 'Simulating...' : 'Simulate Peer Edit'}</span>
               </button>
             </div>
           </div>
@@ -227,7 +290,7 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
               ))}
               {Object.keys(docState.metadata || {}).length === 0 && (
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)', fontStyle: 'italic' }}>
-                  No custom metadata tags added.
+                  No custom metadata tags added yet.
                 </span>
               )}
             </div>
@@ -301,7 +364,7 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 <span>
-                  Author: <b style={{ color: 'var(--text-primary)' }}>{currentPeerObj.name}</b> on branch <b style={{ color: 'var(--emerald-light)' }}>{activeBranch}</b>
+                  Author: <b style={{ color: 'var(--text-primary)' }}>{localPeerName}</b> on branch <b style={{ color: 'var(--emerald-light)' }}>{activeBranch}</b>
                 </span>
                 <button type="submit" className="btn btn-primary btn-sm">
                   Commit Checkpoint
@@ -325,8 +388,9 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1rem' }}>
-            {peersList.map((peer) => {
+            {allPeers.map((peer) => {
               const clockVal = vectorClock[peer.id] || 0;
+              const isLocal = peer.id === currentPeer;
               return (
                 <div key={peer.id} className="vector-hud-card">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -335,11 +399,13 @@ export const CollabEditor: React.FC<CollabEditorProps> = ({
                         width: '9px',
                         height: '9px',
                         borderRadius: '50%',
-                        backgroundColor: peer.color,
+                        backgroundColor: peer.color || '#6366f1',
                         display: 'inline-block',
                       }}
                     />
-                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{peer.name}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                      {peer.name} {isLocal && <span style={{ color: 'var(--indigo-light)', fontWeight: 400 }}>(You)</span>}
+                    </span>
                     <span className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>({peer.id})</span>
                   </div>
                   <div className="badge badge-indigo mono">

@@ -5,7 +5,15 @@ import {
   Tag,
   Sparkles,
   Search,
+  AlertTriangle,
+  FileText,
 } from 'lucide-react';
+
+interface ArtifactChunkItem {
+  id: string;
+  pageNumber?: number;
+  text: string;
+}
 
 interface IngestedArtifact {
   id: string;
@@ -15,6 +23,9 @@ interface IngestedArtifact {
   summary_line: string;
   topics: string[];
   chunks: string[];
+  structured_chunks?: ArtifactChunkItem[];
+  pages_count?: number;
+  requires_ocr?: boolean;
   created_at: number;
 }
 
@@ -22,6 +33,7 @@ export const ResearchIngest: React.FC = () => {
   const [artifacts, setArtifacts] = useState<IngestedArtifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'upload' | 'paste'>('upload');
   const [pasteType, setPasteType] = useState<'markdown' | 'chatgpt' | 'claude'>('markdown');
   const [pasteTitle, setPasteTitle] = useState('');
@@ -56,6 +68,7 @@ export const ResearchIngest: React.FC = () => {
     if (!file) return;
 
     setUploading(true);
+    setUploadError(null);
     const formData = new FormData();
     formData.append('file', file);
     formData.append('title', file.name.replace(/\.[^/.]+$/, ''));
@@ -73,10 +86,15 @@ export const ResearchIngest: React.FC = () => {
         body: formData,
       });
       const data = await res.json();
+      if (!res.ok) {
+        setUploadError(data.error || 'Failed to ingest file.');
+        return;
+      }
       setSelectedArtifact(data);
       fetchArtifacts();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Upload failed:', err);
+      setUploadError(err.message || 'Network error during file upload.');
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -166,6 +184,24 @@ export const ResearchIngest: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {uploadError && (
+          <div style={{
+            background: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid var(--rose)',
+            borderRadius: 'var(--radius-md)',
+            padding: '0.75rem 1rem',
+            color: 'var(--rose-light)',
+            fontSize: '0.8rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            marginBottom: '1rem',
+          }}>
+            <AlertTriangle style={{ width: '16px', height: '16px', flexShrink: 0 }} />
+            <span>{uploadError}</span>
+          </div>
+        )}
 
         {activeTab === 'upload' ? (
           <div
@@ -333,8 +369,16 @@ export const ResearchIngest: React.FC = () => {
             {selectedArtifact ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                 <div style={{ paddingBottom: '0.75rem', borderBottom: '1px solid var(--border-subtle)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                    <span className="badge badge-emerald uppercase mono">{selectedArtifact.type}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      <span className="badge badge-emerald uppercase mono">{selectedArtifact.type}</span>
+                      {selectedArtifact.pages_count && (
+                        <span className="badge badge-indigo mono" style={{ fontSize: '0.65rem' }}>
+                          <FileText style={{ width: '10px', height: '10px', marginRight: '3px' }} />
+                          {selectedArtifact.pages_count} {selectedArtifact.pages_count === 1 ? 'Page' : 'Pages'}
+                        </span>
+                      )}
+                    </div>
                     <span className="mono" style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>ID: {selectedArtifact.id}</span>
                   </div>
                   <h3 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '0.5rem' }}>{selectedArtifact.title}</h3>
@@ -368,19 +412,31 @@ export const ResearchIngest: React.FC = () => {
                     Indexed Chunks ({selectedArtifact.chunks?.length || 0})
                   </span>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '240px', overflowY: 'auto' }}>
-                    {selectedArtifact.chunks?.map((chunk, idx) => (
-                      <div
-                        key={idx}
-                        className="mono"
-                        style={{ padding: '0.65rem', background: 'var(--bg-space)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-dim)', marginBottom: '0.25rem', paddingBottom: '0.25rem', borderBottom: '1px solid var(--border-subtle)' }}>
-                          <span>Chunk #{idx + 1}</span>
-                          <span style={{ color: 'var(--emerald-light)', fontWeight: 600 }}>768-dim Vector Embedded</span>
+                    {(selectedArtifact.structured_chunks || selectedArtifact.chunks.map((text, idx) => ({ id: `c_${idx}`, text }))).map((chunkItem: any, idx: number) => {
+                      const textContent = typeof chunkItem === 'string' ? chunkItem : chunkItem.text;
+                      const pageNum = typeof chunkItem === 'object' ? chunkItem.pageNumber : undefined;
+
+                      return (
+                        <div
+                          key={idx}
+                          className="mono"
+                          style={{ padding: '0.65rem', background: 'var(--bg-space)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-dim)', marginBottom: '0.25rem', paddingBottom: '0.25rem', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                              <span>Chunk #{idx + 1}</span>
+                              {pageNum && (
+                                <span className="badge badge-amber mono" style={{ fontSize: '0.6rem', padding: '0.05rem 0.3rem' }}>
+                                  Page {pageNum}
+                                </span>
+                              )}
+                            </div>
+                            <span style={{ color: 'var(--emerald-light)', fontWeight: 600 }}>768-dim Vector Embedded</span>
+                          </div>
+                          <p style={{ whiteSpace: 'pre-wrap' }}>{textContent}</p>
                         </div>
-                        <p style={{ whiteSpace: 'pre-wrap' }}>{chunk}</p>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>

@@ -5,11 +5,15 @@ import {
   BookOpen,
   Clock,
   Zap,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
 
 interface SearchContextItem {
   title: string;
   artifactId: string;
+  chunkId?: string;
+  pageNumber?: number;
   content: string;
   type: 'vector' | 'topic';
   score: number;
@@ -18,16 +22,18 @@ interface SearchContextItem {
 interface SearchResult {
   query: string;
   answer: string;
+  model?: string;
+  gemini_configured?: boolean;
   context_used: SearchContextItem[];
   topics_matched: string[];
   latency_ms: number;
 }
 
 const SAMPLE_QUERIES = [
-  'How does the 3-way CRDT merge engine guarantee zero conflicts?',
-  'What role do Vector Clocks play in causal concurrency ordering?',
-  'How are CRDT sessions checkpointed into Git Tree and Commit objects?',
-  'What deterministic tie-breakers are used for simultaneous edits?',
+  'How does the CRDT session synchronize operations between peers?',
+  'How are CRDT checkpoints represented in the Git history?',
+  'What happens when two peers make concurrent edits?',
+  'How does 3-way merge calculate the Nearest Common Ancestor (NCA)?',
 ];
 
 export const RagSearch: React.FC = () => {
@@ -39,10 +45,10 @@ export const RagSearch: React.FC = () => {
     if (!queryText.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/search', {
+      const res = await fetch('/api/rag/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: queryText }),
+        body: JSON.stringify({ query: queryText.trim() }),
       });
       const data = await res.json();
       setResult(data);
@@ -129,10 +135,21 @@ export const RagSearch: React.FC = () => {
       {/* Answer Result */}
       {result && (
         <div className="glass-card" style={{ borderColor: 'var(--cyan)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '0.75rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '0.75rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap', gap: '0.5rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Sparkles style={{ width: '18px', height: '18px', color: 'var(--cyan)' }} />
               <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Synthesized Research Answer</h3>
+              {result.gemini_configured ? (
+                <span className="badge badge-emerald" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <CheckCircle2 style={{ width: '12px', height: '12px' }} />
+                  {result.model || 'Gemini Pro'}
+                </span>
+              ) : (
+                <span className="badge badge-amber" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <AlertCircle style={{ width: '12px', height: '12px' }} />
+                  Grounded Local Retrieval
+                </span>
+              )}
             </div>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               <span className="badge badge-cyan mono">
@@ -157,7 +174,7 @@ export const RagSearch: React.FC = () => {
               Retrieved Context & Citations ({result.context_used.length})
             </h4>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '0.75rem' }}>
               {result.context_used.map((ctx, idx) => (
                 <div
                   key={idx}
@@ -180,7 +197,19 @@ export const RagSearch: React.FC = () => {
                     </span>
                   </div>
 
-                  <h5 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{ctx.title}</h5>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    <h5 style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>{ctx.title}</h5>
+                    {ctx.pageNumber && (
+                      <span className="badge badge-amber mono" style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem' }}>
+                        Page {ctx.pageNumber}
+                      </span>
+                    )}
+                    {ctx.chunkId && (
+                      <span className="mono" style={{ fontSize: '0.65rem', color: 'var(--text-dim)' }}>
+                        #{ctx.chunkId.split('_').pop()}
+                      </span>
+                    )}
+                  </div>
 
                   <p className="mono" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.4, maxHeight: '80px', overflowY: 'auto' }}>
                     {ctx.content}

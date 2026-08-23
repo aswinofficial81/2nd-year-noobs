@@ -16,11 +16,11 @@ Research workflows suffer from a fundamental tooling divide:
 ## 2. Solution
 
 **Git for Research** bridges this gap with a four-layer architecture:
-1. **Multi-Format Ingestion**: Ingests Markdown prose, LLM chat session exports (ChatGPT/Claude JSON & Markdown), and scientific PDFs into chunked, embedded research artifacts.
+1. **Multi-Format Ingestion**: Ingests Markdown prose, LLM chat session exports (ChatGPT/Claude JSON & Markdown), and scientific PDFs (via `pdf-parse`) into chunked, embedded research artifacts.
 2. **Hybrid Git + CRDT Versioning**: Checkpoints live, multi-peer CRDT sessions directly into immutable Git `Blob`, `Tree`, and `Commit` DAG objects.
-3. **Semantic 3-Way Merge & Conflict Studio**: Identifies Nearest Common Ancestors (NCA) across divergent branches, computes 3-way delta states, detects concurrent overlapping modifications, and reconciles edits deterministically.
+3. **Semantic 3-Way Merge & Conflict Studio**: Identifies Nearest Common Ancestors (NCA) across divergent branches, computes 3-way delta states, surfaces explicit merge conflicts on overlapping edits, and provides deterministic reconciliation.
 4. **Human-Readable Semantic Diffing**: Computes meaningful semantic diffs between versions, extracting metric/performance deltas (e.g., `Accuracy changed from 82% to 87% (+5 pp)`), prose sentence additions/removals, and metadata changes.
-5. **Dual-Tier Semantic RAG**: Combines local TF-IDF cosine ranking with Gemini generative embeddings and contextual query synthesis across all research artifacts.
+5. **Deterministic RAG Retrieval with Optional AI Synthesis**: Deterministic local 768-dimensional embeddings for retrieval, with optional Gemini synthesis across all research artifacts.
 
 ---
 
@@ -50,7 +50,7 @@ Research workflows suffer from a fundamental tooling divide:
                                ┌────────────────────────────────────────────────────────┐
                                │           Ingestion & Semantic RAG Layer               │
                                │  PDF Parser │ LLM Chat Importer │ Markdown Tokenizer   │
-                               │  Vector Embeddings (768-dim) │ Cosine Search & Gemini  │
+                               │  Local 768-dim Embeddings │ Cosine Search & Gemini     │
                                └────────────────────────────────────────────────────────┘
 ```
 
@@ -58,21 +58,22 @@ Research workflows suffer from a fundamental tooling divide:
 
 ## 4. Ingestion Layer
 
-The ingestion pipeline (`src/server/aiService.ts`) supports multi-format academic and research inputs:
+The ingestion pipeline (`src/server/aiService.ts`, `src/server/server.ts`) supports multi-format academic and research inputs:
 - **Markdown / Plaintext Research Documents**: Structured sectioning, header extraction, word counting, and tag generation.
 - **LLM Chat Exports**: Parses conversation exports from ChatGPT and Claude (JSON dialogues and Markdown logs), extracting user prompts, assistant answers, and multi-turn reasoning chains.
-- **PDF Documents**: Extracts text and structural metadata using `pdf-parse`, chunking documents into sliding-window passages.
-- **Artifact Pipeline**: Automatically extracts key research topics, generates vector embeddings, and stores artifacts with searchable metadata.
+- **PDF Documents**: Robust text and metadata extraction powered by `pdf-parse`, chunking documents into sliding-window passages.
+- **Artifact Pipeline**: Automatically extracts key research topics, generates 768-dimensional search embeddings, and stores artifacts with searchable metadata.
 
 ---
 
 ## 5. Git / Versioning Engine
 
-The versioning engine (`src/models/Repository.ts`, `Blob.ts`, `Tree.ts`, `Commit.ts`) implements core Git primitives:
+The versioning engine (`src/models/Repository.ts`, `Blob.ts`, `Tree.ts`, `Commit.ts`, `src/storage/ObjectStore.ts`) implements core Git primitives:
 - **Content-Addressable Object Storage**: All objects are cryptographically indexed by SHA-256 hashes (`Blob.fromBytes`, `Blob.fromString`).
 - **Immutable Commit DAG**: Commits store tree references, parent commit hashes (supporting dual parents for merge commits), author signatures, and metadata tags.
 - **Branch & HEAD References**: Full branch creation, deletion, fast-forward pointers, and HEAD checkout state management.
 - **Graph Traversal & NCA**: Computes shortest-path graph distances to identify the **Nearest Common Ancestor (NCA)** between any two commit nodes in the DAG.
+- **Disk Persistence**: Sharded filesystem store (`.gitcrdt/objects/xx/yyyy...`) supporting full repository save and restore cycles.
 - **Historical Checkpoints**: Checkpoints live CRDT session states into immutable Git trees (`state.json`), enabling instant session restoration from any historical commit.
 
 ---
@@ -82,7 +83,7 @@ The versioning engine (`src/models/Repository.ts`, `Blob.ts`, `Tree.ts`, `Commit
 The collaboration layer (`src/models/CRDTSession.ts`, `CollaborativeDocument.ts`, `CollaborativeChat.ts`) provides real-time peer-to-peer editing:
 - **Vector Clocks & Causality**: Implements multi-replica Vector Clocks with pairwise comparison (`before`, `after`, `equal`, `concurrent`).
 - **Operations Log**: Tracks causal operations (`insert`, `delete`, `update`, `setTitle`, `setMetadata`) with monotonic Lamport and Vector Clock timestamps.
-- **Deterministic Conflict Resolution**: Employs commutative operation sorting with peer-ID and timestamp tie-breakers, guaranteeing mathematical convergence across replicas regardless of network delivery order.
+- **Deterministic Reconciliation**: Employs commutative operation sorting with peer-ID and timestamp tie-breakers for supported concurrent operations across replicas regardless of network delivery order.
 - **Live Presence & WebSocket Hub**: Real-time broadcast server (`src/server/server.ts`) syncing document state, peer presence, vector clocks, and chat reactions across active rooms.
 
 ---
@@ -92,8 +93,8 @@ The collaboration layer (`src/models/CRDTSession.ts`, `CollaborativeDocument.ts`
 The 3-Way Merge Studio (`src/utils/mergeEngine.ts`, `src/frontend/components/MergeStudio.tsx`) handles branch divergence:
 - **Fast-Forward Merges**: Automatically advances branch pointers when the target branch is a direct ancestor of the source branch.
 - **3-Way Merges**: Identifies the Nearest Common Ancestor (NCA) in the Git DAG and computes 3-way state diffs (`base` vs `ours` vs `theirs`).
-- **Live Conflict Detection**: Surfaces overlapping edits when both branches modified the same fields or prose blocks.
-- **Deterministic CRDT Reconciliation**: Merges operation logs commutatively to guarantee zero divergence while recording a merge commit with dual parent pointers.
+- **Explicit Conflict Detection**: Detects and highlights concurrent modifications across divergent branches with side-by-side 3-way comparisons (`Base (NCA)` vs `Target (Ours)` vs `Source (Theirs)`).
+- **Deterministic Reconciliation**: Merges operation logs commutatively while recording a merge commit with dual parent pointers.
 
 ---
 
@@ -110,10 +111,10 @@ The semantic diff engine (`src/utils/semanticDiff.ts`) moves beyond raw byte-lev
 ## 9. Retrieval / Semantic RAG
 
 The RAG engine (`src/server/aiService.ts`, `src/frontend/components/RagSearch.tsx`) enables multi-modal research discovery:
-- **Embedding Generation**: 768-dimensional normalized dense vector representations for all ingested chunks.
+- **Deterministic Local Embeddings**: 768-dimensional normalized dense vector representations for all ingested chunks, functioning 100% offline without requiring external API keys.
 - **Semantic Similarity Search**: Cosine similarity retrieval over research chunks, conversation messages, and document versions.
-- **Dual-Tier Hybrid Querying**: Fast deterministic local TF-IDF/cosine ranking coupled with optional Gemini AI synthesis for summarized answers with cited sources.
-- **Cross-Artifact Filtering**: Filter queries by artifact type (`paper`, `chat-export`, `pdf`, `experiment-log`, `notes`).
+- **Optional Gemini AI Synthesis**: When a `GEMINI_API_KEY` is configured in `.env`, synthesizes structured answers citing specific repository artifacts; falls back to deterministic local contextual extraction if offline.
+- **Cross-Artifact Filtering**: Filter queries by artifact type (`doc`, `chat`, `pdf`).
 
 ---
 
@@ -121,12 +122,13 @@ The RAG engine (`src/server/aiService.ts`, `src/frontend/components/RagSearch.ts
 
 | Capability Area | Status | Implementation Details |
 |---|:---:|---|
-| **Multi-Format Ingestion** | ✅ Complete | Markdown, plain text, ChatGPT/Claude exports, PDF documents |
+| **Multi-Format Ingestion** | ✅ Complete | Markdown, plain text, ChatGPT/Claude exports, PDF documents (via `pdf-parse`) |
 | **Git Object Model & DAG** | ✅ Complete | SHA-256 `Blob`, `Tree`, `Commit`, `Branch`, `HEAD`, NCA algorithm |
+| **Disk Persistence** | ✅ Complete | Sharded ObjectStore persistence with automatic reload on server startup |
 | **CRDT Collaboration** | ✅ Complete | Vector clocks, causal ordering, multi-peer sync, chat reactions |
-| **3-Way Merge & Conflict Handling** | ✅ Complete | NCA calculation, live conflict detection, CRDT auto-reconciliation |
+| **3-Way Merge & Conflict Handling** | ✅ Complete | NCA calculation, live conflict detection, deterministic reconciliation |
 | **Semantic Diffing** | ✅ Complete | Metric delta extraction, sentence modification detection, title/metadata diffs |
-| **Semantic RAG Search** | ✅ Complete | 768-dim embeddings, cosine similarity search, AI synthesis |
+| **Semantic RAG Search** | ✅ Complete | Local 768-dim embeddings, cosine similarity search, optional Gemini synthesis |
 | **Dark & Light Mode** | ✅ Complete | Complete dual-theme design system with zero-FOUC initialization |
 | **WebSockets & Real-Time Sync** | ✅ Complete | Full-duplex WebSocket broadcasting for multi-peer collaboration |
 
@@ -148,17 +150,23 @@ To maintain strict architectural integrity and hackathon focus, the following it
 - Node.js (>= 18.0.0)
 - npm (>= 9.0.0)
 
-### 1. Install Dependencies
+### 1. Configure Environment (Optional)
+```bash
+# Copy template (Gemini API key is optional; local search works offline without it)
+cp .env.example .env
+```
+
+### 2. Install Dependencies
 ```bash
 npm install
 ```
 
-### 2. Build the Application
+### 3. Build the Application
 ```bash
 npm run build
 ```
 
-### 3. Start the Full-Stack Server (API + WebSockets + UI)
+### 4. Start the Full-Stack Server (API + WebSockets + UI)
 ```bash
 npm run server
 ```
@@ -175,7 +183,7 @@ The application will be accessible at:
 The test suite validates Git primitives, DAG ancestry, vector clock causal ordering, CRDT concurrency, replica synchronization, 3-way merges, fullstack APIs, and semantic diffing.
 
 ```bash
-# Run the entire test suite (123 tests across 31 suites)
+# Run the entire test suite (132 tests across 33 suites)
 npm test
 ```
 
@@ -189,5 +197,7 @@ npm test
 - `tests/storage.test.ts` — Sharded ObjectStore persistence and deserialization
 - `tests/collaborativeModels.test.ts` — High-level CollaborativeDocument and CollaborativeChat
 - `tests/semanticDiff.test.ts` — Metric delta extraction, sentence diffs, and 3-way conflict detection
+- `tests/pdfParser.test.ts` — PDF text layer extraction, multi-page chunking, and OCR detection
+- `tests/aiService.test.ts` — Semantic RAG retrieval, 768-dim embeddings, and Gemini synthesis pipeline
 - `tests/fullstack_integration.test.ts` — REST endpoints, WebSocket live sync, and end-to-end flows
 - `tests/hardening.test.ts` — Multi-peer concurrency stress testing and error boundaries

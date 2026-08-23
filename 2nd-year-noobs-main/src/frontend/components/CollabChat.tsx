@@ -6,6 +6,7 @@ import {
   Clock,
   Users,
 } from 'lucide-react';
+import type { PeerInfo } from './CollabEditor.js';
 
 interface ChatMessage {
   id: string;
@@ -18,7 +19,8 @@ interface ChatMessage {
 interface CollabChatProps {
   activeBranch: string;
   currentPeer: string;
-  peersList: Array<{ id: string; name: string; color: string }>;
+  localPeerName: string;
+  peersList: PeerInfo[];
   messages: ChatMessage[];
   onSendMessage: (text: string, author: string) => void;
   onReactMessage: (messageId: string, emoji: string) => void;
@@ -30,6 +32,7 @@ const EMOJI_LIST = ['🚀', '🔥', '👍', '❤️', '💡', '🎉'];
 export const CollabChat: React.FC<CollabChatProps> = ({
   activeBranch,
   currentPeer,
+  localPeerName,
   peersList,
   messages,
   onSendMessage,
@@ -37,23 +40,28 @@ export const CollabChat: React.FC<CollabChatProps> = ({
   onCommitCheckpoint,
 }) => {
   const [inputMsg, setInputMsg] = useState('');
-  const [activeAuthor, setActiveAuthor] = useState(currentPeer);
+  const [activeAuthor, setActiveAuthor] = useState(localPeerName);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputMsg.trim()) return;
-    onSendMessage(inputMsg.trim(), activeAuthor);
+    onSendMessage(inputMsg.trim(), activeAuthor || localPeerName);
     setInputMsg('');
   };
 
-  const getAuthorPeer = (authorId: string) => {
-    return (
-      peersList.find((p) => p.id === authorId || p.name === authorId) || {
-        id: authorId,
-        name: authorId,
-        color: '#6366f1',
-      }
+  const getAuthorPeer = (authorIdOrName: string) => {
+    const found = peersList.find(
+      (p) => p.id === authorIdOrName || p.name === authorIdOrName
     );
+    if (found) return found;
+    if (authorIdOrName === localPeerName || authorIdOrName === currentPeer) {
+      return { id: currentPeer, name: localPeerName, color: '#6366f1' };
+    }
+    return {
+      id: authorIdOrName,
+      name: authorIdOrName,
+      color: '#06b6d4',
+    };
   };
 
   return (
@@ -96,13 +104,16 @@ export const CollabChat: React.FC<CollabChatProps> = ({
           ) : (
             messages.map((msg) => {
               const peer = getAuthorPeer(msg.author);
-              const isSelf = msg.author === currentPeer || msg.author === activeAuthor;
+              const isSelf =
+                msg.author === currentPeer ||
+                msg.author === localPeerName ||
+                msg.author === activeAuthor;
 
               return (
                 <div key={msg.id} className={`chat-msg-row ${isSelf ? 'self' : ''}`}>
                   {/* Avatar */}
-                  <div className="chat-avatar" style={{ backgroundColor: peer.color }}>
-                    {peer.name[0].toUpperCase()}
+                  <div className="chat-avatar" style={{ backgroundColor: peer.color || '#6366f1' }}>
+                    {(peer.name || 'U')[0].toUpperCase()}
                   </div>
 
                   {/* Message Bubble */}
@@ -126,7 +137,7 @@ export const CollabChat: React.FC<CollabChatProps> = ({
                           key={emoji}
                           onClick={() => onReactMessage(msg.id, emoji)}
                           className="reaction-chip"
-                          style={reactors.includes(currentPeer) ? { background: 'var(--indigo-glow)', borderColor: 'var(--indigo)' } : {}}
+                          style={reactors.includes(currentPeer) ? { background: 'rgba(99, 102, 241, 0.2)', borderColor: 'var(--indigo)' } : {}}
                         >
                           <span>{emoji}</span>
                           <span className="mono" style={{ fontWeight: 700 }}>{reactors.length}</span>
@@ -159,28 +170,7 @@ export const CollabChat: React.FC<CollabChatProps> = ({
         <form onSubmit={handleSend} style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
             <Users style={{ width: '13px', height: '13px', color: 'var(--indigo)' }} />
-            <span>Send persona:</span>
-            <div style={{ display: 'flex', gap: '0.3rem' }}>
-              {peersList.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setActiveAuthor(p.id)}
-                  style={{
-                    background: activeAuthor === p.id ? 'var(--indigo)' : 'var(--bg-surface)',
-                    color: activeAuthor === p.id ? '#ffffff' : 'var(--text-secondary)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '0.15rem 0.45rem',
-                    fontSize: '0.7rem',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {p.name}
-                </button>
-              ))}
-            </div>
+            <span>Posting as: <b style={{ color: 'var(--text-primary)' }}>{localPeerName} (You)</b></span>
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem' }}>

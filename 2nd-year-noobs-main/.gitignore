@@ -1,0 +1,28 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+dist-client/
+
+# Python caches
+__pycache__/
+*.pyc
+*/__pycache__/
+*/*/__pycache__/
+.pytest_cache/
+
+# Local GitCRDT persistence
+.gitcrdt/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

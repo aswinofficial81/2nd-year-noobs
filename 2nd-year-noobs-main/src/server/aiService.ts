@@ -1,6 +1,13 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+export interface ArtifactChunk {
+  id: string;
+  artifactId: string;
+  pageNumber?: number;
+  text: string;
+}
+
 export interface IngestedArtifact {
   id: string;
   type: 'doc' | 'chat' | 'pdf';
@@ -9,6 +16,9 @@ export interface IngestedArtifact {
   summary_line: string;
   topics: string[];
   chunks: string[];
+  structured_chunks?: ArtifactChunk[];
+  pages_count?: number;
+  requires_ocr?: boolean;
   normalized_messages?: Array<{ role: string; content: string; timestamp?: number }>;
   created_at: number;
 }
@@ -16,9 +26,13 @@ export interface IngestedArtifact {
 export interface SearchResult {
   query: string;
   answer: string;
+  model: string;
+  gemini_configured: boolean;
   context_used: Array<{
     title: string;
     artifactId: string;
+    chunkId?: string;
+    pageNumber?: number;
     content: string;
     type: 'vector' | 'topic';
     score: number;
@@ -26,8 +40,6 @@ export interface SearchResult {
   topics_matched: string[];
   latency_ms: number;
 }
-
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 /**
  * Computes cosine similarity between two numeric vectors.
@@ -47,13 +59,12 @@ export function cosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 /**
- * Generates simple pseudo-embedding vector (768-dim deterministic bag-of-words / character hash)
- * when Gemini API key is missing or rate limited.
+ * Generates deterministic 768-dimensional token-hashed normalized embedding vector.
  */
 export function generateDeterministicEmbedding(text: string, dims = 768): number[] {
   const vec = new Array(dims).fill(0);
   const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
-  
+
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
     let hash = 0;
@@ -67,7 +78,7 @@ export function generateDeterministicEmbedding(text: string, dims = 768): number
     vec[secondaryIdx] += 0.5;
   }
 
-  // Normalize
+  // Normalize to unit length for cosine similarity
   let norm = 0;
   for (let i = 0; i < dims; i++) norm += vec[i] * vec[i];
   if (norm > 0) {
@@ -79,7 +90,13 @@ export function generateDeterministicEmbedding(text: string, dims = 768): number
 
 export class AIService {
   private artifacts: Map<string, IngestedArtifact> = new Map();
-  private chunkEmbeddings: Map<string, { embedding: number[]; artifactId: string; text: string }> = new Map();
+  private chunkEmbeddings: Map<string, {
+    embedding: number[];
+    artifactId: string;
+    chunkId: string;
+    pageNumber?: number;
+    text: string;
+  }> = new Map();
 
   constructor() {
     this.seedDefaultArtifacts();
@@ -94,14 +111,14 @@ export class AIService {
 This project bridges the gap between asynchronous version control and real-time collaborative editing:
 1. Live Collaboration Layer (CRDT): High-speed, in-memory peer-to-peer document and chat state synchronization powered by Vector Clocks and Deterministic Conflict Resolution.
 2. Version Control Layer (Git): Content-addressable SHA-256 object store (Blob, Tree, Commit, Branch, HEAD) providing full immutable history, commit DAGs, and branch navigation.
-3. Semantic 3-Way CRDT Merge Engine: Branch merges calculate the Nearest Common Ancestor (NCA) and merge diverged states with zero merge conflicts and proven mathematical convergence.`,
+3. Semantic 3-Way CRDT Merge Engine: Branch merges calculate the Nearest Common Ancestor (NCA) and merge diverged states with deterministic reconciliation and explicit conflict detection.`,
       summary_line: 'Comprehensive architectural overview of Git immutability combined with real-time CRDT multi-peer synchronization.',
-      topics: ['crdt', 'git', 'version control', 'vector clocks', '3-way merge'],
+      topics: ['crdt', 'git', 'version control', 'vector clocks', '3-way merge', 'nca'],
       chunks: [
         'This project bridges the gap between asynchronous version control and real-time collaborative editing.',
         '1. Live Collaboration Layer (CRDT): High-speed, in-memory peer-to-peer document and chat state synchronization powered by Vector Clocks and Deterministic Conflict Resolution.',
         '2. Version Control Layer (Git): Content-addressable SHA-256 object store (Blob, Tree, Commit, Branch, HEAD) providing full immutable history, commit DAGs, and branch navigation.',
-        '3. Semantic 3-Way CRDT Merge Engine: Branch merges calculate the Nearest Common Ancestor (NCA) and merge diverged states with zero merge conflicts and proven mathematical convergence.'
+        '3. Semantic 3-Way CRDT Merge Engine: Branch merges calculate the Nearest Common Ancestor (NCA) and merge diverged states with deterministic reconciliation and explicit conflict detection.'
       ],
       created_at: Date.now() - 3600000,
     };
@@ -110,19 +127,19 @@ This project bridges the gap between asynchronous version control and real-time 
       id: 'art-research-chat-v1',
       type: 'chat',
       title: 'AI Research Team Collaboration Log',
-      raw_content: `Alice: Have we tested the Vector Clock tie-breaker during concurrent edits?
-Bob: Yes, deterministic peer IDs break ties whenever Lamport counters are identical.
-Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cases.`,
-      summary_line: 'Discussion confirming vector clock tie-breaking and zero-conflict NCA branch merging.',
+      raw_content: `Researcher A: Have we tested the Vector Clock tie-breaker during concurrent edits?
+Researcher B: Yes, deterministic peer IDs break ties whenever Lamport counters are identical.
+Researcher C: Branch merging with NCA also verified with deterministic reconciliation across concurrent operations.`,
+      summary_line: 'Discussion confirming vector clock tie-breaking and deterministic NCA branch merging.',
       topics: ['vector clocks', 'concurrency', 'tie-breaker', 'branch merge', 'nca'],
       chunks: [
-        'Alice: Have we tested the Vector Clock tie-breaker during concurrent edits?\nBob: Yes, deterministic peer IDs break ties whenever Lamport counters are identical.',
-        'Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cases.'
+        'Researcher A: Have we tested the Vector Clock tie-breaker during concurrent edits?\nResearcher B: Yes, deterministic peer IDs break ties whenever Lamport counters are identical.',
+        'Researcher C: Branch merging with NCA also verified with deterministic reconciliation across concurrent operations.'
       ],
       normalized_messages: [
         { role: 'user', content: 'Have we tested the Vector Clock tie-breaker during concurrent edits?' },
         { role: 'assistant', content: 'Yes, deterministic peer IDs break ties whenever Lamport counters are identical.' },
-        { role: 'user', content: 'Branch merging with NCA also verified. Zero conflicts across 118 test cases.' }
+        { role: 'user', content: 'Branch merging with NCA also verified with deterministic reconciliation across concurrent operations.' }
       ],
       created_at: Date.now() - 1800000,
     };
@@ -142,16 +159,31 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
   public indexArtifact(artifact: IngestedArtifact): IngestedArtifact {
     this.artifacts.set(artifact.id, artifact);
 
-    // Index chunks with embeddings
-    artifact.chunks.forEach((chunkText, idx) => {
-      const chunkKey = `${artifact.id}_chunk_${idx}`;
-      const emb = generateDeterministicEmbedding(chunkText);
-      this.chunkEmbeddings.set(chunkKey, {
-        embedding: emb,
-        artifactId: artifact.id,
-        text: chunkText,
+    // Index structured chunks if provided (e.g., from PDF with page numbers)
+    if (artifact.structured_chunks && artifact.structured_chunks.length > 0) {
+      artifact.structured_chunks.forEach((chunk) => {
+        const emb = generateDeterministicEmbedding(chunk.text);
+        this.chunkEmbeddings.set(chunk.id, {
+          embedding: emb,
+          artifactId: artifact.id,
+          chunkId: chunk.id,
+          pageNumber: chunk.pageNumber,
+          text: chunk.text,
+        });
       });
-    });
+    } else {
+      // Index standard chunks
+      artifact.chunks.forEach((chunkText, idx) => {
+        const chunkKey = `${artifact.id}_chunk_${idx}`;
+        const emb = generateDeterministicEmbedding(chunkText);
+        this.chunkEmbeddings.set(chunkKey, {
+          embedding: emb,
+          artifactId: artifact.id,
+          chunkId: chunkKey,
+          text: chunkText,
+        });
+      });
+    }
 
     return artifact;
   }
@@ -194,30 +226,82 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
 
   public async generateSummary(text: string): Promise<string> {
     if (!text.trim()) return '';
-    if (GEMINI_API_KEY) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
       try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{ text: `Summarize the following research text concisely in 1-2 sentences:\n\n${text.slice(0, 3000)}` }]
-              }]
-            })
+        const models = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-pro-preview'];
+        for (const model of models) {
+          try {
+            const response = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  contents: [{
+                    parts: [{ text: `Summarize the following research text concisely in 1-2 sentences:\n\n${text.slice(0, 3000)}` }]
+                  }]
+                })
+              }
+            );
+            if (response.ok) {
+              const data = await response.json() as any;
+              const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (summary && summary.trim()) return summary.trim();
+            }
+          } catch {
+            // try next model
           }
-        );
-        const data = await response.json() as any;
-        const summary = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (summary) return summary.trim();
+        }
       } catch (err) {
-        console.warn('Gemini summary call failed, falling back:', err);
+        console.warn('[AI Service] Gemini summary generation failed, falling back:', err);
       }
     }
     // Fallback: first 2 non-empty sentences
     const sentences = text.replace(/\n+/g, ' ').split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
     return sentences.slice(0, 2).join('. ') + (sentences.length ? '.' : '');
+  }
+
+  private async callGeminiGeneration(prompt: string, apiKey: string): Promise<{ text: string; model: string }> {
+    const models = ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-pro-preview'];
+    let lastError: any = null;
+
+    for (const model of models) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [{ text: prompt }]
+              }],
+              generationConfig: {
+                temperature: 0.2,
+                maxOutputTokens: 1024,
+              }
+            })
+          }
+        );
+
+        if (!response.ok) {
+          const errBody = await response.text();
+          throw new Error(`HTTP ${response.status} (${model}): ${errBody}`);
+        }
+
+        const data = (await response.json()) as any;
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text && text.trim()) {
+          return { text: text.trim(), model };
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Gemini RAG] Attempt with ${model} failed, trying next fallback:`, err.message);
+      }
+    }
+
+    throw lastError || new Error('Gemini API returned empty response');
   }
 
   public async searchAndSynthesize(query: string): Promise<SearchResult> {
@@ -228,17 +312,23 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
     // Tier 1: Vector Similarity search over chunks
     const chunkScores: Array<{
       artifactId: string;
+      chunkId: string;
+      pageNumber?: number;
       content: string;
       score: number;
     }> = [];
 
     for (const [, item] of this.chunkEmbeddings.entries()) {
       const sim = cosineSimilarity(queryEmb, item.embedding);
-      chunkScores.push({
-        artifactId: item.artifactId,
-        content: item.text,
-        score: sim,
-      });
+      if (sim > 0.05) {
+        chunkScores.push({
+          artifactId: item.artifactId,
+          chunkId: item.chunkId,
+          pageNumber: item.pageNumber,
+          content: item.text,
+          score: sim,
+        });
+      }
     }
 
     chunkScores.sort((a, b) => b.score - a.score);
@@ -261,7 +351,7 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
         topicMatches.push({
           artifactId: art.id,
           content: `[Topic Match: ${common.join(', ')}] ${art.summary_line || art.title}`,
-          score: common.length * 0.35,
+          score: Math.min(0.9, common.length * 0.3),
         });
       }
     }
@@ -273,6 +363,8 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
       contextUsed.push({
         title: art?.title || 'Unknown Artifact',
         artifactId: c.artifactId,
+        chunkId: c.chunkId,
+        pageNumber: c.pageNumber,
         content: c.content,
         type: 'vector',
         score: Math.round(c.score * 100) / 100,
@@ -280,65 +372,76 @@ Carol: Branch merging with NCA also verified. Zero conflicts across 118 test cas
     });
 
     topicMatches.slice(0, 3).forEach(t => {
-      const art = this.artifacts.get(t.artifactId);
-      contextUsed.push({
-        title: art?.title || 'Topic Result',
-        artifactId: t.artifactId,
-        content: t.content,
-        type: 'topic',
-        score: Math.round(t.score * 100) / 100,
-      });
+      // Avoid duplicate artifact representation if already in top chunks
+      if (!contextUsed.some(c => c.artifactId === t.artifactId)) {
+        const art = this.artifacts.get(t.artifactId);
+        contextUsed.push({
+          title: art?.title || 'Topic Result',
+          artifactId: t.artifactId,
+          content: t.content,
+          type: 'topic',
+          score: Math.round(t.score * 100) / 100,
+        });
+      }
     });
 
-    // Synthesize Answer with Gemini or Local Synthesis
+    const apiKey = process.env.GEMINI_API_KEY;
     let answer = '';
-    const contextString = contextUsed.map(c => `[Source: ${c.title}]\n${c.content}`).join('\n\n---\n\n');
+    let modelName = 'local-retrieval';
+    let geminiConfigured = false;
 
-    if (GEMINI_API_KEY) {
+    const contextString = contextUsed
+      .map(c => {
+        const pageLabel = c.pageNumber ? ` • Page ${c.pageNumber}` : '';
+        return `[Source: ${c.title}${pageLabel}] (Similarity Score: ${c.score})\n${c.content}`;
+      })
+      .join('\n\n---\n\n');
+
+    if (apiKey) {
       try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `You are a research assistant answering questions based on the provided collaborative repository documents and chat logs.
-Answer the question accurately using ONLY the provided context. If not mentioned, state what is known from context.
-Include source citations in brackets where applicable (e.g. [Git + CRDT Hybrid Architecture Specification]).
+        const prompt = `You are an expert AI research assistant analyzing collaborative version control documents, CRDT specifications, and engineering discussions.
+Answer the user's question accurately using ONLY the provided retrieved context.
+If the answer is only partially addressed, state what is known from context and what remains unspecified.
+Always cite the source document titles in brackets (e.g. [Git + CRDT Hybrid Architecture Specification]) when drawing facts.
 
-Context:
-${contextString || 'No direct context found.'}
+Retrieved Context:
+${contextString || 'No direct matching context found.'}
 
-Question:
-${query}`
-                }]
-              }]
-            })
-          }
-        );
-        const data = await response.json() as any;
-        const resText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (resText) answer = resText.trim();
-      } catch (err) {
-        console.warn('Gemini RAG synthesis failed, using local synthesizer:', err);
+User Question:
+${query}`;
+
+        const result = await this.callGeminiGeneration(prompt, apiKey);
+        answer = result.text;
+        modelName = result.model;
+        geminiConfigured = true;
+      } catch (err: any) {
+        console.warn('[RAG] Gemini call failed, returning grounded local retrieval with error status:', err.message);
       }
     }
 
     if (!answer) {
-      if (contextUsed.length > 0) {
-        answer = `Based on our ingested repository knowledge base and collaborative logs:\n\n` +
-          contextUsed.slice(0, 3).map(c => `• ${c.content.replace(/\n+/g, ' ')} (Source: "${c.title}")`).join('\n\n') +
-          `\n\nAll operations and documents are causally tracked via Vector Clocks and checkpointed to Git trees.`;
+      if (!apiKey) {
+        if (contextUsed.length > 0) {
+          answer = `⚠️ GEMINI_API_KEY is not configured in the backend environment (.env). To enable live Gemini Pro neural synthesis, add your API key to .env.\n\nRetrieved Grounded Sources (${contextUsed.length} matching excerpts):\n\n` +
+            contextUsed.map(c => `• [${c.title}] (Score: ${c.score})\n  ${c.content.replace(/\n+/g, ' ')}`).join('\n\n');
+        } else {
+          answer = `⚠️ GEMINI_API_KEY is not configured in the backend environment (.env).\n\nNo matching excerpts were found in the current indexed artifacts for "${query}". Upload research documents, PDFs, or chat transcripts in the Ingestion tab to expand the knowledge base.`;
+        }
       } else {
-        answer = `I could not find directly relevant context for "${query}" in the currently indexed artifacts. You can ingest more Markdown files, PDFs, or ChatGPT/Claude exports to expand the research corpus.`;
+        if (contextUsed.length > 0) {
+          answer = `Based on retrieved repository artifacts:\n\n` +
+            contextUsed.map(c => `• ${c.content.replace(/\n+/g, ' ')} (Source: [${c.title}])`).join('\n\n');
+        } else {
+          answer = `I could not find matching context for "${query}" in the currently indexed artifacts. You can ingest more Markdown files, PDFs, or chat exports in the Ingestion Hub.`;
+        }
       }
     }
 
     return {
       query,
       answer,
+      model: modelName,
+      gemini_configured: geminiConfigured,
       context_used: contextUsed,
       topics_matched: Array.from(matchedTopicsSet),
       latency_ms: Date.now() - startTime,

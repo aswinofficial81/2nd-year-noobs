@@ -3,6 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import multer from 'multer';
+import { createRequire } from 'module';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -22,6 +23,9 @@ import {
   type TreeEntry,
 } from '../index.js';
 import { aiService, type IngestedArtifact } from './aiService.js';
+import { extractTextFromPDF, chunkPDFPages } from './pdfParser.js';
+
+const require = createRequire(import.meta.url);
 
 const app = express();
 const server = http.createServer(app);
@@ -33,16 +37,14 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-// --- Global In-Memory Repository State ---
+// --- Global Persisted Repository State ---
 const storageDir = path.join(os.tmpdir(), 'git-crdt-server-repo');
 let store = new ObjectStore(storageDir);
 let repo = new Repository('git-crdt-collab-repo');
 
 // Active Peer Sessions Map: Map<sessionId, CRDTSession>
 const activeSessions: Map<string, CRDTSession> = new Map();
-// Active Documents Map: Map<sessionId, CollaborativeDocument>
 const activeDocs: Map<string, CollaborativeDocument> = new Map();
-// Active Chats Map: Map<sessionId, CollaborativeChat>
 const activeChats: Map<string, CollaborativeChat> = new Map();
 
 function getOrCreateSession(branchName: string, peerId: string): {
@@ -67,7 +69,6 @@ function getOrCreateSession(branchName: string, peerId: string): {
   };
 }
 
-// Seed initial state with a commit
 function seedInitialCommit() {
   const author: AuthorSignature = {
     name: 'Lead AI Engineer',
@@ -75,26 +76,61 @@ function seedInitialCommit() {
     timestamp: Date.now() - 3600000,
   };
 
-  const { doc, chat, session } = getOrCreateSession('main', 'alice');
-  doc.setTitle('Git + CRDT Whitepaper');
-  doc.insertText('Decentralized Version Control & Real-time Collaboration Engine.');
-  doc.setMetadata('version', '1.0.0-rc');
-  chat.postMessage('Welcome to the Git+CRDT collaborative workspace!');
+  const { doc, chat, session } = getOrCreateSession('main', 'default_peer');
+  doc.setTitle('Untitled Research Document');
+  doc.insertText('Start typing collaborative research notes, code, or ideas here...');
+  doc.setMetadata('status', 'draft');
+  chat.postMessage('Collaborative workspace session initialized. Ready for real-time peer editing.');
 
-  const commit = repo.checkpointSession(session, author, 'feat: initial collaborative project bootstrap');
+  const commit = repo.checkpointSession(session, author, 'feat: initial repository bootstrap');
+  store.saveRepository(repo).catch(() => {});
   console.log(`[Server] Initialized repository '${repo.name}' with commit: ${commit.id}`);
 }
 
-seedInitialCommit();
+// Initialize and restore persisted repository
+async function initRepository() {
+  try {
+    if (fs.existsSync(path.join(storageDir, 'config.json'))) {
+      repo = await store.loadRepository();
+      console.log(`[Server] Successfully restored persisted repository '${repo.name}' from ${storageDir}`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[Server] Could not load persisted repository, creating new instance:', err);
+  }
+
+  seedInitialCommit();
+}
+
+initRepository();
 
 // --- WebSocket Real-Time Peer Broadcasting ---
 interface WSClient extends WebSocket {
   peerId?: string;
+  peerName?: string;
+  color?: string;
   room?: string;
   isAlive?: boolean;
 }
 
 const rooms = new Map<string, Set<WSClient>>();
+
+function getRoomPeers(room: string): Array<{ id: string; name: string; color: string; isOnline: boolean }> {
+  const clients = rooms.get(room);
+  if (!clients) return [];
+  const map = new Map<string, { id: string; name: string; color: string; isOnline: boolean }>();
+  for (const client of clients) {
+    if (client.peerId) {
+      map.set(client.peerId, {
+        id: client.peerId,
+        name: client.peerName || client.peerId,
+        color: client.color || '#6366f1',
+        isOnline: client.readyState === WebSocket.OPEN,
+      });
+    }
+  }
+  return Array.from(map.values());
+}
 
 wss.on('connection', (ws: WSClient) => {
   ws.isAlive = true;
@@ -103,10 +139,12 @@ wss.on('connection', (ws: WSClient) => {
   ws.on('message', (messageRaw: string) => {
     try {
       const data = JSON.parse(messageRaw.toString());
-      const { type, room = 'main', peerId = 'alice', payload = {} } = data;
+      const { type, room = 'main', peerId = 'peer_local', peerName, color, payload = {} } = data;
 
       if (type === 'join') {
         ws.peerId = peerId;
+        ws.peerName = peerName || peerId;
+        ws.color = color || '#6366f1';
         ws.room = room;
         if (!rooms.has(room)) {
           rooms.set(room, new Set());
@@ -114,6 +152,8 @@ wss.on('connection', (ws: WSClient) => {
         rooms.get(room)!.add(ws);
 
         const { doc, chat, session } = getOrCreateSession(room, peerId);
+        const activePeers = getRoomPeers(room);
+
         // Send state snapshot
         ws.send(JSON.stringify({
           type: 'sync-state',
@@ -134,14 +174,15 @@ wss.on('connection', (ws: WSClient) => {
             })),
           },
           vectorClock: Object.fromEntries(session.getVectorClock()),
-          activePeers: Array.from(rooms.get(room)!).map(c => c.peerId).filter(Boolean),
+          activePeers,
         }));
 
-        // Broadcast peer join
+        // Broadcast peer join to others
         broadcastToRoom(room, {
           type: 'peer-joined',
-          peerId,
-          activePeers: Array.from(rooms.get(room)!).map(c => c.peerId).filter(Boolean),
+          peerId: ws.peerId,
+          peerName: ws.peerName,
+          activePeers,
         }, ws);
       }
 
@@ -221,10 +262,12 @@ wss.on('connection', (ws: WSClient) => {
   ws.on('close', () => {
     if (ws.room && rooms.has(ws.room)) {
       rooms.get(ws.room)!.delete(ws);
+      const activePeers = getRoomPeers(ws.room);
       broadcastToRoom(ws.room, {
         type: 'peer-left',
         peerId: ws.peerId,
-        activePeers: Array.from(rooms.get(ws.room)!).map(c => c.peerId).filter(Boolean),
+        peerName: ws.peerName,
+        activePeers,
       });
     }
   });
@@ -341,6 +384,9 @@ app.post('/api/branch/create', (req: Request, res: Response) => {
   }
   try {
     const branch = repo.createBranch(name, startCommitId || repo.currentCommitId);
+    try {
+      store.saveRepository(repo);
+    } catch (e) {}
     res.json({
       success: true,
       branch: {
@@ -375,10 +421,10 @@ app.post('/api/branch/checkout', (req: Request, res: Response) => {
 app.post('/api/commit', (req: Request, res: Response) => {
   const {
     branch = repo.head.target,
-    peerId = 'alice',
+    peerId = 'default_peer',
     message = 'feat: collaborative checkpoint',
-    authorName = 'Alice',
-    email = 'alice@example.com',
+    authorName,
+    email,
   } = req.body;
 
   try {
@@ -386,13 +432,17 @@ app.post('/api/commit', (req: Request, res: Response) => {
       repo.checkout(branch);
     }
     const { session } = getOrCreateSession(branch, peerId);
+    const effectiveAuthor = authorName || peerId || 'Researcher';
     const author: AuthorSignature = {
-      name: authorName,
-      email,
+      name: effectiveAuthor,
+      email: email || `${peerId}@gitcrdt.local`,
       timestamp: Date.now(),
     };
 
     const commit = repo.checkpointSession(session, author, message);
+    try {
+      store.saveRepository(repo);
+    } catch (e) {}
 
     res.json({
       success: true,
@@ -633,6 +683,9 @@ app.post('/api/branch/merge', (req: Request, res: Response) => {
       author,
       message: message || `Merge branch '${sourceBranch}' into '${targetBranch}'`,
     });
+    try {
+      store.saveRepository(repo);
+    } catch (e) {}
 
     res.json({
       success: true,
@@ -652,10 +705,11 @@ app.post('/api/branch/merge', (req: Request, res: Response) => {
 // 10. Session state & Live Collaborative Dispatch
 app.get('/api/session/state', (req: Request, res: Response) => {
   const branch = (req.query.branch as string) || (repo.head.type === 'branch' ? repo.head.target : 'main');
-  const peerId = (req.query.peerId as string) || 'alice';
+  const peerId = (req.query.peerId as string) || 'default_peer';
 
   const { doc, chat, session } = getOrCreateSession(branch, peerId);
   const jsonSession = session.toJSON();
+  const activePeers = getRoomPeers(branch);
 
   res.json({
     branch,
@@ -677,7 +731,14 @@ app.get('/api/session/state', (req: Request, res: Response) => {
     vectorClock: Object.fromEntries(session.getVectorClock()),
     operationsCount: jsonSession.pendingOperations.length,
     operationsLog: jsonSession.pendingOperations.slice(-30),
+    activePeers,
   });
+});
+
+app.get('/api/session/peers', (req: Request, res: Response) => {
+  const branch = (req.query.branch as string) || 'main';
+  const peers = getRoomPeers(branch);
+  res.json({ branch, peers });
 });
 
 app.post('/api/session/edit', (req: Request, res: Response) => {
@@ -824,24 +885,34 @@ app.post('/api/ingest/pdf', upload.single('file'), async (req: Request, res: Res
     }
 
     const title = req.body.title || req.file.originalname.replace(/\.pdf$/i, '');
-    // Simple text extraction from PDF buffer
-    let rawText = req.file.buffer.toString('latin1').replace(/[^\x20-\x7E\n\r\t]/g, ' ');
-    // Filter clean words
-    const cleanLines = rawText.split('\n').filter(l => l.trim().length > 10).slice(0, 100);
-    const content = cleanLines.join('\n') || `Extracted PDF document contents for: ${title}`;
+    const extractionResult = await extractTextFromPDF(req.file.buffer);
 
-    const chunks = aiService.chunkText(content);
+    if (!extractionResult.success) {
+      return res.status(422).json({
+        error: extractionResult.error || 'This PDF does not contain an extractable text layer.',
+        requires_ocr: extractionResult.requiresOcr ?? true,
+        totalPages: extractionResult.totalPages,
+      });
+    }
+
+    const content = extractionResult.fullText;
+    const artifactId = `art-pdf-${Date.now()}`;
+    const structuredChunks = chunkPDFPages(extractionResult.pages, artifactId);
+    const chunks = structuredChunks.map(c => c.text);
+
     const summary = await aiService.generateSummary(content);
     const topics = aiService.extractTopics(content);
 
     const artifact: IngestedArtifact = {
-      id: `art-pdf-${Date.now()}`,
+      id: artifactId,
       type: 'pdf',
       title,
       raw_content: content,
       summary_line: summary,
       topics,
       chunks,
+      structured_chunks: structuredChunks,
+      pages_count: extractionResult.totalPages,
       created_at: Date.now(),
     };
 
@@ -961,7 +1032,7 @@ app.get('/api/artifacts/:id', (req: Request, res: Response) => {
 });
 
 // 18. Cross-Corpus Semantic RAG Search & Synthesis
-app.post('/api/search', async (req: Request, res: Response) => {
+app.post(['/api/search', '/api/rag/query'], async (req: Request, res: Response) => {
   const { query } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: 'Query string is required' });
@@ -974,6 +1045,18 @@ app.post('/api/search', async (req: Request, res: Response) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Serve frontend static assets if built
+const clientDistPath = path.join(process.cwd(), 'dist-client');
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+  app.use((req: Request, res: Response, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+      return next();
+    }
+    res.sendFile(path.join(clientDistPath, 'index.html'));
+  });
+}
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
