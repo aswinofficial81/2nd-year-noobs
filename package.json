@@ -1,13 +1,54 @@
 {
-  "name": "git-crdt-root",
+  "name": "git-crdt-core",
   "version": "1.0.0",
-  "description": "Git + CRDT Collaboration Engine & AI Research Hub",
+  "description": "Core data models for Git + CRDT collaborative version control system",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "git-crdt": "./dist/cli/index.js"
+  },
   "scripts": {
-    "dev": "npm --prefix 2nd-year-noobs-main run dev",
-    "build": "npm --prefix 2nd-year-noobs-main run build",
-    "test": "npm --prefix 2nd-year-noobs-main test",
-    "demo": "npm --prefix 2nd-year-noobs-main run demo",
-    "server": "npm --prefix 2nd-year-noobs-main run server",
-    "client": "npm --prefix 2nd-year-noobs-main run client"
+    "build": "tsc && vite build",
+    "test": "npx tsx --test tests/**/*.test.ts",
+    "demo": "npx tsx src/cli/index.ts demo",
+    "server": "npx tsx src/server/server.ts",
+    "client": "vite",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "start": "npx tsx src/server/server.ts"
+  },
+  "keywords": [
+    "git",
+    "crdt",
+    "vcs",
+    "collaboration"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^22.20.1",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^10.0.5",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "lucide-react": "^1.33.0",
+    "multer": "^2.2.0",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "ws": "^8.21.3"
   }
 }
