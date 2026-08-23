@@ -1,0 +1,13 @@
+{
+  "name": "git-crdt-root",
+  "version": "1.0.0",
+  "description": "Git + CRDT Collaboration Engine & AI Research Hub",
+  "scripts": {
+    "dev": "npm --prefix 2nd-year-noobs-main run dev",
+    "build": "npm --prefix 2nd-year-noobs-main run build",
+    "test": "npm --prefix 2nd-year-noobs-main test",
+    "demo": "npm --prefix 2nd-year-noobs-main run demo",
+    "server": "npm --prefix 2nd-year-noobs-main run server",
+    "client": "npm --prefix 2nd-year-noobs-main run client"
+  }
+}
